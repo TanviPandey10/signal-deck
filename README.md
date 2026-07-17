@@ -1,84 +1,174 @@
- Signal Deck
-A performance-critical, real-time data visualization dashboard. It streams five
-simulated telemetry channels at up to ~250 samples/sec each, keeps a rolling
-buffer of hundreds of thousands of points in memory, and renders all of it at
-60fps — without ever handing React a large array to reconcile.
-Live demo: signal-deck-phi.vercel.app
+# Signal Deck
 
+**Signal Deck** is a **performance-critical, real-time telemetry visualization dashboard** built with **React 18, TypeScript, and Canvas 2D**. It streams five simulated telemetry channels at **up to 250 samples/second each**, maintains a rolling in-memory buffer containing **hundreds of thousands of data points**, and renders smoothly at **60 FPS**—without ever passing large datasets through React's rendering pipeline.
 
-Why this exists
-The brief asked for a "performance-critical data visualization dashboard."
-Rather than wrap a charting library around some mock JSON, this project treats
-performance as the actual design problem: how do you keep a UI fluid when the
-data underneath it never stops moving and can outgrow what the DOM, or even a
-single thread, can comfortably handle?
-The chosen subject is a plant telemetry console — reactor core temp,
-coolant flow, turbine vibration, grid frequency, bus voltage — because
-instrumentation panels are the canonical real-world case for this problem:
-dense, continuous, multi-channel signals that someone is actually watching
-in real time.
-Performance techniques used, and why
-TechniqueWhereProblem it solvesCanvas 2D rendering instead of SVG/DOMCanvasChart.tsxAn SVG <path> or DOM node per data point falls over well before 10k points. Canvas draws the whole frame as one raster operation, independent of point count.Typed-array ring buffersringBuffer.tsPushing onto a growing Array for an unbounded stream causes GC pressure and unbounded memory growth. A pre-allocated Float64Array ring buffer keeps memory flat regardless of stream duration.LTTB downsampling in a Web Workerlttb.ts, dataProcessor.worker.ts, workerClient.tsYou cannot usefully paint more line segments than there are horizontal pixels. Largest-Triangle-Three-Buckets reduces a 20k-point series to ~800 points while preserving its visual shape (peaks, spikes) far better than naive stride sampling — and it runs off the main thread so it never competes with rendering or input handling.Decoupled data engine vs. render loopstreamEngine.tsData generation runs on its own requestAnimationFrame loop, completely outside React state. Components read snapshots only when they're about to paint, so 60k+ samples/sec of throughput never triggers a single React re-render.Live-edge compositingCanvasChart.tsxThe worker only refreshes a chart's downsampled history every ~120ms (no point recomputing more often than the eye can register a shape change), but the chart still redraws every frame so the newest point never looks stalled.Hand-rolled list virtualizationVirtualizedTable.tsxThe raw event log can hold thousands of rows. Only the rows intersecting the scroll viewport (plus a small overscan) are ever mounted as DOM nodes; a spacer div preserves correct scrollbar geometry.ResizeObserver over window resize listenersCanvasChart.tsx, VirtualizedTable.tsxCharts and the table size themselves to their actual container, and only recompute layout when that container changes — not on every global resize/scroll event.Real frame-timing instrumentationuseFPS.ts, PerfMonitor.tsxThe dashboard measures its own requestAnimationFrame deltas rather than trusting React DevTools' render timings, so the FPS/frame-time/dropped-frame readout in the header reflects what's actually happening on screen.
-Try the performance controls yourself
+**Live Demo:** https://signal-deck-phi.vercel.app
 
-DOWNSAMPLE: NONE vs LTTB vs STRIDE — switch to NONE on a fast speed
-multiplier and watch frame time climb in the header as the canvas is asked
-to draw raw, unreduced series. Switch back to LTTB and it flattens out.
-Speed multiplier (0.5×–5×) — scales the simulated sample rate per
-channel, so you can push the pipeline well past real-world telemetry rates.
-Target points slider — controls how aggressively each series is
-reduced before painting; watch the "raw → pts" readout and worker latency
-update live.
+---
 
-Architecture
+# Why Signal Deck?
+
+The objective was to build a **performance-critical data visualization dashboard**, where performance itself becomes the primary engineering challenge.
+
+Instead of relying on a charting library with static datasets, Signal Deck continuously processes high-frequency telemetry streams similar to those found in industrial monitoring systems.
+
+The dashboard simulates:
+
+* 🌡 Reactor Core Temperature
+* 💧 Coolant Flow Rate
+* ⚙ Turbine Vibration
+* ⚡ Grid Frequency
+* 🔋 Bus Voltage
+
+These continuously updating signals represent a realistic instrumentation panel where maintaining responsiveness under heavy load is essential.
+
+---
+
+# Key Performance Optimizations
+
+| Technique                          | Purpose                                                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Canvas 2D Rendering**            | Renders thousands of points as a single raster operation, avoiding DOM/SVG bottlenecks.                      |
+| **TypedArray Ring Buffers**        | Uses pre-allocated `Float64Array` buffers for constant memory usage with zero array growth.                  |
+| **LTTB Downsampling (Web Worker)** | Reduces large datasets while preserving visual fidelity. Runs off the main thread to keep the UI responsive. |
+| **Separate Streaming Engine**      | Data generation runs independently of React, preventing high-frequency updates from triggering re-renders.   |
+| **Live-Edge Rendering**            | Displays the latest incoming samples immediately while historical data is refreshed asynchronously.          |
+| **Custom Virtualized Table**       | Only renders visible rows from large datasets, dramatically reducing DOM size.                               |
+| **ResizeObserver Layouts**         | Components respond only to their own container size changes instead of global resize events.                 |
+| **Real FPS Instrumentation**       | Measures actual animation frame timing instead of relying on React render metrics.                           |
+
+---
+
+# Performance Playground
+
+Experiment with different rendering strategies using the built-in controls.
+
+### Downsampling Modes
+
+* **LTTB** – Preserves spikes and trends while minimizing rendered points.
+* **Stride Sampling** – Simple fixed-interval sampling.
+* **None** – Draws every point to demonstrate rendering costs.
+
+### Speed Multiplier
+
+Adjust the simulated sample rate from **0.5× to 5×** to stress-test the rendering pipeline.
+
+### Target Points
+
+Control the number of points retained after downsampling and observe:
+
+* Raw → Rendered point count
+* Worker latency
+* Frame time
+* FPS
+
+---
+
+# Architecture
+
+```text
 src/
+├── components/
+│   ├── Chart/
+│   │   └── CanvasChart.tsx
+│   ├── Controls/
+│   │   └── Toolbar.tsx
+│   ├── Table/
+│   │   └── VirtualizedTable.tsx
+│   └── PerfMonitor.tsx
+│
+├── hooks/
+│   └── useFPS.ts
+│
 ├── store/
-│   ├── streamEngine.ts     # data generation + ring buffers, outside React
-│   ├── workerClient.ts     # single shared Web Worker for downsampling
-│   └── useDashboardStore.ts# Zustand store for UI-facing settings only
+│   ├── streamEngine.ts
+│   ├── workerClient.ts
+│   └── useDashboardStore.ts
+│
+├── utils/
+│   ├── dataGenerator.ts
+│   ├── lttb.ts
+│   └── ringBuffer.ts
+│
 ├── workers/
 │   └── dataProcessor.worker.ts
-├── utils/
-│   ├── lttb.ts             # LTTB + naive stride downsampling
-│   ├── ringBuffer.ts       # fixed-capacity typed-array ring buffer
-│   └── dataGenerator.ts    # deterministic synthetic signal generator
-├── hooks/
-│   └── useFPS.ts           # real frame-timing measurement
-├── components/
-│   ├── Chart/CanvasChart.tsx
-│   ├── Table/VirtualizedTable.tsx
-│   ├── Controls/Toolbar.tsx
-│   └── PerfMonitor.tsx
+│
 └── App.tsx
-Data flow: streamEngine generates samples every animation frame and
-writes them straight into per-channel RingBuffers (no React involved). Each
-CanvasChart independently pulls a windowed snapshot from its channel's
-buffer on a ~120ms interval, ships it to the shared worker for LTTB
-reduction, and repaints its own <canvas> every frame using the latest
-reduced series. The VirtualizedTable polls the shared raw event log on its
-own interval and only ever mounts the rows currently in view.
-Nothing here blocks on anything else — a slow chart never stalls the table,
-and a paused stream never stalls the UI.
-Stack
+```
 
-React 18 + TypeScript, built with Vite
-Zustand for the small slice of state that's actually UI-facing
-Canvas 2D (no charting library) for rendering
-Native Web Workers (no library) for off-thread computation
-Zero UI component libraries — all styling is hand-written CSS
+---
 
-Running locally
-bashnpm install
-npm run dev       # http://localhost:5173
-npm run build     # production build to dist/
-npm run preview   # serve the production build locally
+# Data Flow
+
+1. **streamEngine** continuously generates telemetry samples.
+2. Samples are written directly into **TypedArray Ring Buffers**.
+3. Each chart periodically captures a snapshot of recent data.
+4. Snapshots are sent to a **shared Web Worker**.
+5. The worker performs **LTTB downsampling**.
+6. Canvas charts redraw every animation frame using the latest reduced dataset.
+7. The event log is displayed using a custom **virtualized table**, rendering only visible rows.
+
+Each subsystem operates independently, ensuring that expensive operations never block rendering or user interaction.
+
+---
+
+# Tech Stack
+
+* React 18
+* TypeScript
+* Vite
+* Zustand
+* Canvas 2D API
+* Native Web Workers
+* Typed Arrays
+* Custom Virtualization
+* Vanilla CSS (No UI Libraries)
+
+---
+
+# Running Locally
+
+```bash
+npm install
+
+npm run dev
+# http://localhost:5173
+
+npm run build
+
+npm run preview
+
 npm run lint
-Requires Node 18+.
-Deployment
-The app is a static SPA (npm run build → dist/) and needs no backend, so
-any static host works. Pick one:
-Option A — Vercel (recommended, vercel.json already included)
+```
 
- 
+**Requirements**
 
-Built by Tanvi Pandey
+* Node.js 18+
+
+---
+
+# Deployment
+
+Signal Deck is a static Single Page Application.
+
+```bash
+npm run build
+```
+
+The generated `dist/` folder can be deployed to any static hosting provider.
+
+Recommended platforms:
+
+* Vercel
+* Netlify
+* GitHub Pages
+* Cloudflare Pages
+
+---
+
+# Built By
+
+**Tanvi Pandey**
+
+Performance-focused Full Stack & Machine Learning Engineer passionate about building scalable, high-performance web applications.
+
